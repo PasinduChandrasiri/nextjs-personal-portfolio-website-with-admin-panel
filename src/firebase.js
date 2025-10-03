@@ -28,16 +28,3 @@ function getFirebaseApp() {
 export const app = getFirebaseApp();
 export const database = getDatabase(app);
 export const auth = getAuth(app);
-
-
-
-// const firebaseConfig = {
-//   apiKey: "AIzaSyDb6BbwPCZowiqls971pYognyR6KNW_TBM",
-//   authDomain: "dev-portfolio-26e43.firebaseapp.com",
-//   databaseURL: "https://dev-portfolio-26e43-default-rtdb.firebaseio.com",
-//   projectId: "dev-portfolio-26e43",
-//   storageBucket: "dev-portfolio-26e43.firebasestorage.app",
-//   messagingSenderId: "573376511287",
-//   appId: "1:573376511287:web:9343a50fc41daf0539aeb2"
-// };
-

@@ -1,22 +1,27 @@
-import siteConfig from '../config';
+import useSettings from '../hooks/useSettings';
 
-const hasProjects = siteConfig.projects && siteConfig.projects.length > 0;
-const hasExperience = siteConfig.experience && siteConfig.experience.length > 0;
-const hasEducation = siteConfig.education && siteConfig.education.length > 0;
-
+/**
+ * Footer component displaying contact links and simple navigation. Uses
+ * settings for personal details and social links. Dark mode styling has
+ * been removed to simplify the design.
+ */
 export default function Footer() {
+  const settings = useSettings();
+  const hasProjects = settings.projects && settings.projects.length > 0;
+  const hasExperience = settings.experience && settings.experience.length > 0;
+  const hasEducation = settings.education && settings.education.length > 0;
   return (
     <footer className="relative border-t border-gray-200 bg-gray-50">
       <div className="mx-auto max-w-6xl px-6 py-12 lg:px-8">
         <div className="flex flex-col gap-8 md:flex-row md:items-center md:justify-between">
           <div className="flex flex-col gap-4">
-            <h3 className="text-2xl font-bold text-gray-800">{siteConfig.name}</h3>
-            <p className="text-base text-gray-600">{siteConfig.title}</p>
+            <h3 className="text-2xl font-bold text-gray-800">{settings.name}</h3>
+            <p className="text-base text-gray-600">{settings.title}</p>
             <div className="flex gap-x-6">
               {/* Email */}
-              {siteConfig.social.email && (
+              {settings.social?.email && (
                 <a
-                  href={`mailto:${siteConfig.social.email}`}
+                  href={`mailto:${settings.social.email}`}
                   className="text-gray-600 transition-colors duration-300 hover:text-[var(--accent-color)]"
                   aria-label="Email"
                 >
@@ -32,9 +37,9 @@ export default function Footer() {
                 </a>
               )}
               {/* LinkedIn */}
-              {siteConfig.social.linkedin && (
+              {settings.social?.linkedin && (
                 <a
-                  href={siteConfig.social.linkedin}
+                  href={settings.social.linkedin}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="LinkedIn"
@@ -54,9 +59,9 @@ export default function Footer() {
                 </a>
               )}
               {/* Twitter */}
-              {siteConfig.social.twitter && (
+              {settings.social?.twitter && (
                 <a
-                  href={siteConfig.social.twitter}
+                  href={settings.social.twitter}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Twitter"
@@ -75,9 +80,9 @@ export default function Footer() {
                 </a>
               )}
               {/* GitHub */}
-              {siteConfig.social.github && (
+              {settings.social?.github && (
                 <a
-                  href={siteConfig.social.github}
+                  href={settings.social.github}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="GitHub"
@@ -123,12 +128,12 @@ export default function Footer() {
               )}
             </nav>
             <p className="text-sm text-gray-500">
-              © {new Date().getFullYear()} {siteConfig.name}. All rights reserved.
+              © {new Date().getFullYear()} {settings.name}. All rights reserved.
             </p>
           </div>
         </div>
       </div>
-      {/* Decorative pattern similar to Astro version */}
+      {/* Decorative pattern similar to the original design */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <svg
           aria-hidden="true"

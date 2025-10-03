@@ -6,6 +6,9 @@ const siteConfig = {
   title: 'Computer Engineering Undergraduate',
   description: 'Portfolio website for Pasindu Chandrasiri',
   accentColor: '#1d4ed8', // Tailwind blue-700
+  // Fallback profile image. This will be overridden by the admin panel if a URL
+  // is provided in the realtime database settings.
+  profileImage: '/profile.jpg',
   social: {
     email: 'your-email@example.com',
     linkedin: 'https://linkedin.com/in/yourprofile',

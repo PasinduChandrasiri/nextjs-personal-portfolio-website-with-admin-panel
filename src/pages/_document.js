@@ -1,10 +1,16 @@
-import { Html, Head, Main, NextScript } from "next/document";
+import { Html, Head, Main, NextScript } from 'next/document';
 
+/**
+ * Custom Document. This file customizes the HTML document rendered on
+ * the server. It includes a Google Fonts stylesheet for the IBM Plex
+ * Mono font. Dark mode logic has been removed since the site only
+ * supports a single light theme.
+ */
 export default function Document() {
   return (
     <Html>
       <Head>
-        {/* Keep fonts here; this is the correct place for global stylesheets */}
+        {/* Preconnect and load Google Fonts */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link

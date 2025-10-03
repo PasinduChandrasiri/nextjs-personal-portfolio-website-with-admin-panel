@@ -1,5 +1,12 @@
-/* src/styles/globals.css */
+/* Tailwind v4 import */
 @import "tailwindcss";
 
-html { scroll-behavior: smooth; }
-body { font-family: "IBM Plex Mono", monospace; }
+/* Smooth scroll for anchor links */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Global monospace font */
+body {
+  font-family: 'IBM Plex Mono', monospace;
+}

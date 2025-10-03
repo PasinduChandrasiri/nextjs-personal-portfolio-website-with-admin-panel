@@ -3,18 +3,19 @@ import { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { database } from '../../firebase';
 import { ref, get } from 'firebase/database';
-import siteConfig from '../../config';
-import Header from '../../components/Header';
-import Footer from '../../components/Footer';
+import useSettings from '../../hooks/useSettings';
+import Link from 'next/link';
 import { Swiper, SwiperSlide } from 'swiper/react';
 import { Navigation, Pagination, Autoplay } from 'swiper/modules';
 import 'swiper/css';
 import 'swiper/css/navigation';
 import 'swiper/css/pagination';
+import siteConfig from '../../config';
 
 export default function ProjectDetail() {
   const router = useRouter();
   const { slug } = router.query;
+  const settings = useSettings();
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -67,17 +68,25 @@ export default function ProjectDetail() {
   return (
     <>
       <Head>
-        <title>{`${project.name} | ${siteConfig.name}`}</title>
+        <title>{`${project.name} | ${settings.name}`}</title>
       </Head>
-      <Header />
-      <main className="mx-auto max-w-5xl px-6 py-24">
-        <h1 className="mb-4 text-3xl font-bold text-gray-900">
+      <main className="mx-auto max-w-5xl px-6 py-20">
+        {/* Back button */}
+        <button
+          onClick={() => router.back()}
+          className="mb-6 inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
+        >
+          ← Back
+        </button>
+        <h1 className="mb-4 text-3xl font-bold text-gray-900 sm:text-4xl">
           {name}
         </h1>
         {/* Project description */}
-        <p className="mb-8 text-base text-gray-600 sm:text-lg">
-          {description}
-        </p>
+        {description && (
+          <p className="mb-8 text-base text-gray-600 sm:text-lg">
+            {description}
+          </p>
+        )}
         {/* Image slider */}
         {images.length > 0 && (
           <Swiper
@@ -156,7 +165,6 @@ export default function ProjectDetail() {
           </div>
         )}
       </main>
-      <Footer />
     </>
   );
 }

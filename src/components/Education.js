@@ -1,24 +1,42 @@
-import siteConfig from '../config';
+import useSettings from '../hooks/useSettings';
+import { motion } from 'framer-motion';
 
+/**
+ * Education section. Lists educational background entries from the
+ * settings. Animates headings and cards with Framer Motion.
+ */
 export default function Education() {
-  const hasEducation = siteConfig.education && siteConfig.education.length > 0;
-  if (!hasEducation) return null;
+  const settings = useSettings();
+  const educations = settings.education || [];
+  if (!educations.length) return null;
+  const fade = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
+  };
   return (
-    <section id="education" className="p-8 sm:p-12 md:p-16 lg:p-24 bg-gray-50">
-      <div className="grid gap-8 lg:grid-cols-12 lg:gap-16 items-start">
-        <div className="lg:col-span-4 mb-4 lg:mb-0">
-          <h2 className="text-3xl font-bold text-gray-900 sm:text-4xl md:text-5xl xl:text-7xl">
+    <section id="education" className="bg-gray-50 p-8 sm:p-12 md:p-16 lg:p-24">
+      <div className="grid items-start gap-8 lg:grid-cols-12 lg:gap-16">
+        <div className="mb-4 lg:col-span-4 lg:mb-0">
+          <motion.h2
+            variants={fade}
+            initial="hidden"
+            animate="visible"
+            className="text-3xl font-bold text-gray-900 sm:text-4xl md:text-5xl xl:text-7xl"
+          >
             Education
-          </h2>
+          </motion.h2>
           <div
             className="mt-2 h-1 w-20 rounded-full"
-            style={{ backgroundColor: siteConfig.accentColor }}
+            style={{ backgroundColor: settings.accentColor }}
           />
         </div>
         <div className="lg:col-span-8 space-y-8">
-          {siteConfig.education.map((edu, idx) => (
-            <div
+          {educations.map((edu, idx) => (
+            <motion.div
               key={idx}
+              initial="hidden"
+              animate="visible"
+              variants={fade}
               className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow duration-300 hover:shadow-md sm:p-5 md:p-6"
             >
               <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -26,7 +44,7 @@ export default function Education() {
                   <h3 className="text-lg font-semibold text-gray-900 sm:text-xl">
                     {edu.degree}
                   </h3>
-                  <p className="text-base sm:text-lg" style={{ color: siteConfig.accentColor }}>
+                  <p className="text-base sm:text-lg" style={{ color: settings.accentColor }}>
                     {edu.school}
                   </p>
                 </div>
@@ -35,7 +53,7 @@ export default function Education() {
                 </span>
               </div>
               <ul className="space-y-2">
-                {edu.achievements.map((achievement, i) => (
+                {edu.achievements?.map((achievement, i) => (
                   <li key={i} className="flex items-start">
                     <span className="mt-2 mr-3 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-gray-400" />
                     <span className="text-sm text-gray-600 sm:text-base">
@@ -44,7 +62,7 @@ export default function Education() {
                   </li>
                 ))}
               </ul>
-            </div>
+            </motion.div>
           ))}
         </div>
       </div>
