@@ -1,38 +1,78 @@
-import { useState, useEffect } from 'react';
+// src/pages/admin/index.js
+import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import { auth, database } from '../../firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { ref, set, remove, onValue } from 'firebase/database';
+import { ref, set, remove, onValue, update, get } from 'firebase/database';
 import useSettings from '../../hooks/useSettings';
-import { CldUploadButton } from 'next-cloudinary';
-import Header from '../../components/Header';
+import { CldUploadButton } from 'next-cloudinary'; // still used for projects (works fine for you)
 
-// Helper to slugify strings for project keys
+const KNOWN_KEYS = new Set([
+  'name',
+  'title',
+  'description',
+  'accentColor',
+  'aboutMe',
+  'skills',
+  'experience',
+  'education',
+  'social',
+  'profileImage',
+]);
+
 const slugify = (str) =>
-  str
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)+/g, '');
+  str.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+
+// ---------- DIRECT CLOUDINARY UPLOAD (no widget) ----------
+async function directUploadToCloudinary(file) {
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+  const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error(
+      'Missing Cloudinary env vars. Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME and NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET.'
+    );
+  }
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('upload_preset', uploadPreset);
+
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+    method: 'POST',
+    body: form,
+  });
+
+  const json = await res.json();
+  if (!res.ok) {
+    throw new Error(json?.error?.message || 'Cloudinary upload failed.');
+  }
+  if (!json.secure_url) {
+    throw new Error('Cloudinary response did not include secure_url.');
+  }
+  return json.secure_url;
+}
 
 export default function AdminPage() {
   const settings = useSettings();
   const [user, setUser] = useState(null);
   const [status, setStatus] = useState('');
-  // Auth fields
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  // Tab navigation
+
   const [activeTab, setActiveTab] = useState('projects');
-  // Local state for editable settings
   const [localSettings, setLocalSettings] = useState(settings);
-  // Projects list
+
+  // keep the just-uploaded URL safe until saved
+  const [pendingProfileUrl, setPendingProfileUrl] = useState('');
+
+  // file input ref for direct upload
+  const fileInputRef = useRef(null);
+
+  // Projects
   const [projectList, setProjectList] = useState([]);
-  /**
-   * Currently editing project slug. If null, the form is in "add" mode.
-   */
   const [editingSlug, setEditingSlug] = useState(null);
-  // Form fields for project creation/editing
   const [projName, setProjName] = useState('');
   const [projShortDesc, setProjShortDesc] = useState('');
   const [projFullDesc, setProjFullDesc] = useState('');
@@ -41,21 +81,21 @@ export default function AdminPage() {
   const [projLinkedin, setProjLinkedin] = useState('');
   const [projDemo, setProjDemo] = useState('');
   const [projImages, setProjImages] = useState([]);
-  // Experience & Education editing arrays (local copy)
+
+  // Experience & education
   const [expList, setExpList] = useState([]);
   const [eduList, setEduList] = useState([]);
 
-  // Sync local copy with settings when settings update
+  // Auth state
   useEffect(() => {
-    setLocalSettings(settings);
-    setExpList(settings.experience || []);
-    setEduList(settings.education || []);
-  }, [settings]);
+    const unsub = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
+    return () => unsub();
+  }, []);
 
-  // Fetch projects list for admin view
+  // Projects list
   useEffect(() => {
     const projectsRef = ref(database, 'projects');
-    const unsubscribe = onValue(projectsRef, (snapshot) => {
+    const unsub = onValue(projectsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const list = Object.keys(data).map((key) => ({ slug: key, ...data[key] }));
@@ -64,18 +104,29 @@ export default function AdminPage() {
         setProjectList([]);
       }
     });
-    return () => unsubscribe();
-  }, []);
-
-  // Observe authentication state
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
     return () => unsub();
   }, []);
 
-  // Authentication handlers
+  // ONE-TIME init from DB
+  const [initialized, setInitialized] = useState(false);
+  useEffect(() => {
+    if (!initialized) {
+      setLocalSettings(settings || {});
+      setExpList(settings.experience || []);
+      setEduList(settings.education || []);
+      setInitialized(true);
+    }
+  }, [settings, initialized]);
+
+  // Refresh on tab switch ONLY (prevents clobber while editing)
+  useEffect(() => {
+    setLocalSettings(settings || {});
+    setExpList(settings.experience || []);
+    setEduList(settings.education || []);
+    // Do NOT clear pendingProfileUrl here
+  }, [activeTab]); // <-- critical: do not depend on `settings` here
+
+  // Login
   async function handleLogin(e) {
     e.preventDefault();
     try {
@@ -89,58 +140,109 @@ export default function AdminPage() {
     await signOut(auth);
   }
 
-  // Update settings in realtime database
-  async function saveSettings(updated) {
+  // SETTINGS SAVE HELPERS
+  async function updateSettings(partial) {
     try {
-      await set(ref(database, 'settings'), updated);
+      const safe = {};
+      for (const k of Object.keys(partial)) {
+        if (KNOWN_KEYS.has(k)) safe[k] = partial[k];
+      }
+      await update(ref(database, 'settings'), safe);
       setStatus('Settings saved successfully.');
     } catch (err) {
+      console.error('updateSettings error:', err);
       setStatus(`Error saving settings: ${err.message}`);
     }
   }
 
-  // Handlers for saving each section
   const handleSaveGeneral = () => {
-    const updated = {
-      ...settings,
-      name: localSettings.name,
-      title: localSettings.title,
-      description: localSettings.description,
-      accentColor: localSettings.accentColor,
-    };
-    saveSettings(updated);
+    updateSettings({
+      name: localSettings.name || '',
+      title: localSettings.title || '',
+      description: localSettings.description || '',
+      accentColor: localSettings.accentColor || '#1d4ed8',
+    });
   };
-  const handleSaveAbout = () => {
-    saveSettings({ ...settings, aboutMe: localSettings.aboutMe });
-  };
+  const handleSaveAbout = () => updateSettings({ aboutMe: localSettings.aboutMe || '' });
   const handleSaveSkills = () => {
-    const skillsArr = localSettings.skills.filter((s) => s && s.trim().length > 0);
-    saveSettings({ ...settings, skills: skillsArr });
+    const skillsArr = (localSettings.skills || []).filter((s) => s && s.trim().length > 0);
+    updateSettings({ skills: skillsArr });
   };
-  const handleSaveSocial = () => {
-    saveSettings({ ...settings, social: { ...localSettings.social } });
-  };
-  const handleSaveExperience = () => {
-    saveSettings({ ...settings, experience: expList });
-  };
-  const handleSaveEducation = () => {
-    saveSettings({ ...settings, education: eduList });
-  };
-  const handleSaveProfileImage = () => {
-    saveSettings({ ...settings, profileImage: localSettings.profileImage });
+  const handleSaveSocial = () => updateSettings({ social: { ...(localSettings.social || {}) } });
+  const handleSaveExperience = () => updateSettings({ experience: expList });
+  const handleSaveEducation = () => updateSettings({ education: eduList });
+
+  // -------- PROFILE IMAGE (DIRECT UPLOAD) --------
+  const onPickProfileFile = () => fileInputRef.current?.click();
+
+  const onProfileFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setStatus('Uploading image to Cloudinary...');
+      const url = await directUploadToCloudinary(file);
+      console.log('[DIRECT UPLOAD] secure_url:', url);
+      setPendingProfileUrl(url);
+      setLocalSettings((prev) => ({ ...prev, profileImage: url })); // preview
+      setStatus('Upload success. Click "Save Profile" to apply.');
+    } catch (err) {
+      console.error('Direct upload error:', err);
+      setStatus(`Upload failed: ${err.message}`);
+    } finally {
+      // reset the input so selecting the same file again will trigger onChange
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
-  // Project CRUD handlers
-  const handleUploadProjectImage = (result) => {
-    const url = result.info.secure_url;
-    setProjImages((prev) => [...prev, url]);
+  const handleSaveProfileImage = async () => {
+    const chosen = (pendingProfileUrl || localSettings.profileImage || '').trim();
+    console.log('[SAVE] chosen url (pending || local):', chosen, { pendingProfileUrl, local: localSettings.profileImage });
+
+    if (!chosen) {
+      setStatus('No profile image URL to save. Please upload an image first.');
+      return;
+    }
+    try {
+      const node = ref(database, 'settings/profileImage');
+      console.log('[SAVE] Writing to /settings/profileImage:', chosen);
+      await set(node, chosen);
+
+      const verifySnap = await get(node);
+      const saved = verifySnap.exists() ? verifySnap.val() : null;
+      console.log('[VERIFY] /settings/profileImage now =', saved);
+
+      if (saved === chosen) {
+        setStatus('Profile image saved successfully.');
+        setPendingProfileUrl('');
+        setLocalSettings((prev) => ({ ...prev, profileImage: chosen })); // keep UI in sync immediately
+      } else {
+        throw new Error('Verification mismatch: DB returned a different value for /settings/profileImage.');
+      }
+    } catch (err) {
+      console.error('handleSaveProfileImage error:', err);
+      setStatus(`Error saving profile image: ${err.message}`);
+    }
   };
-  /**
-   * Save a project. If editingSlug is null, create a new project; otherwise
-   * update the existing project at the editingSlug key. The slug will be
-   * derived from the project name for new projects. A project must have
-   * a name and at least one image to be saved.
-   */
+
+  // -------- PROJECTS (unchanged, still using Cloudinary widget which works for you) --------
+  const handleUploadProjectImage = (result) => {
+    try {
+      // next-cloudinary typically yields result.info.secure_url for projects (already working)
+      const url =
+        result?.info?.secure_url ||
+        result?.secure_url ||
+        (Array.isArray(result?.info?.files) && result.info.files[0]?.uploadInfo?.secure_url) ||
+        '';
+      if (url) {
+        setProjImages((prev) => [...prev, url]);
+      } else {
+        setStatus('Project image upload failed. Please try again.');
+      }
+    } catch (e) {
+      setStatus(`Project upload handler error: ${e.message}`);
+    }
+  };
+
   async function handleSaveProject(e) {
     e.preventDefault();
     if (!projName || projImages.length === 0) {
@@ -167,18 +269,12 @@ export default function AdminPage() {
     try {
       await set(ref(database, `projects/${slug}`), data);
       setStatus(`Project ${editingSlug ? 'updated' : 'saved'} successfully.`);
-      // Reset form and editing state
       resetProjectForm();
     } catch (err) {
       setStatus(`Error saving project: ${err.message}`);
     }
   }
 
-  /**
-   * Populate the project form with data for editing. Sets editingSlug and
-   * loads the existing values into the form fields. Also scrolls to the
-   * top of the form for convenience.
-   */
   function editProject(proj) {
     setEditingSlug(proj.slug);
     setProjName(proj.name || '');
@@ -189,15 +285,11 @@ export default function AdminPage() {
     setProjLinkedin(proj.links?.linkedin || '');
     setProjDemo(proj.links?.demo || '');
     setProjImages(proj.images || []);
-    // Scroll to top of page to bring form into view
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }
 
-  /**
-   * Reset the project form fields and clear editing state.
-   */
   function resetProjectForm() {
     setEditingSlug(null);
     setProjName('');
@@ -209,194 +301,150 @@ export default function AdminPage() {
     setProjDemo('');
     setProjImages([]);
   }
-  async function deleteProject(slug) {
-    if (!confirm('Are you sure you want to delete this project?')) return;
-    try {
-      await remove(ref(database, `projects/${slug}`));
-      setStatus('Project deleted.');
-    } catch (err) {
-      setStatus(`Error deleting project: ${err.message}`);
-    }
-  }
 
-  // Handlers for editing exp/edu lists
-  const addExperience = () => {
-    setExpList((prev) => [...prev, { company: '', title: '', dateRange: '', bullets: [''] }]);
-  };
-  const updateExperienceField = (idx, field, value) => {
-    setExpList((prev) => prev.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
-  };
-  const updateExperienceBullet = (idx, bulletIdx, value) => {
-    setExpList((prev) =>
-      prev.map((item, i) =>
-        i === idx ? { ...item, bullets: item.bullets.map((b, j) => (j === bulletIdx ? value : b)) } : item
-      )
-    );
-  };
-  const addExperienceBullet = (idx) => {
-    setExpList((prev) =>
-      prev.map((item, i) => (i === idx ? { ...item, bullets: [...item.bullets, ''] } : item))
-    );
-  };
-  const deleteExperience = (idx) => {
-    setExpList((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  const addEducation = () => {
-    setEduList((prev) => [...prev, { school: '', degree: '', dateRange: '', achievements: [''] }]);
-  };
-  const updateEducationField = (idx, field, value) => {
-    setEduList((prev) => prev.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
-  };
-  const updateEducationAchievement = (idx, achIdx, value) => {
-    setEduList((prev) =>
-      prev.map((item, i) =>
-        i === idx ? { ...item, achievements: item.achievements.map((a, j) => (j === achIdx ? value : a)) } : item
-      )
-    );
-  };
-  const addEducationAchievement = (idx) => {
-    setEduList((prev) =>
-      prev.map((item, i) => (i === idx ? { ...item, achievements: [...item.achievements, ''] } : item))
-    );
-  };
-  const deleteEducation = (idx) => {
-    setEduList((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  // Handle upload of profile image
-  const handleProfileUpload = (result) => {
-    const url = result.info.secure_url;
-    setLocalSettings((prev) => ({ ...prev, profileImage: url }));
-  };
-
+  // UI
   return (
     <>
-      <Head>
-        <title>Admin Panel</title>
-      </Head>
+      <Head><title>Admin Panel</title></Head>
+
       <div className="min-h-screen bg-gray-700 p-4 pt-10 pb-10">
         <div className="mx-auto max-w-4xl">
           <h1 className="mb-6 text-center text-3xl font-bold text-white">Admin Panel</h1>
+
           {!user ? (
             <form onSubmit={handleLogin} className="space-y-6 rounded-lg bg-white p-6 shadow">
               {status && <p className="text-red-600">{status}</p>}
               <div>
-                <label className="block text-sm font-medium text-gray-700">Email</label>
+                <label htmlFor="login-email" className="block text-sm font-medium text-gray-700">Email</label>
                 <input
+                  id="login-email"
+                  name="email"
+                  autoComplete="email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700">Password</label>
+                <label htmlFor="login-password" className="block text-sm font-medium text-gray-700">Password</label>
                 <input
+                  id="login-password"
+                  name="password"
+                  autoComplete="current-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                 />
               </div>
-              <button
-                type="submit"
-                className="w-full rounded-md bg-indigo-600 px-4 py-2 text-center text-sm font-medium text-white hover:bg-indigo-700"
-              >
+              <button type="submit" className="w-full rounded-md bg-indigo-600 px-4 py-2 text-center text-sm font-medium text-white hover:bg-indigo-700">
                 Sign in
               </button>
             </form>
           ) : (
             <div className="space-y-6 rounded-lg bg-gray-200 p-6 shadow">
               <div className="mb-4 flex items-center justify-between">
-                <p className="text-sm text-black bg-green-400 p-2 rounded-2xl">Logged in as {user.email}</p>
-                <button
-                  onClick={handleLogout}
-                  className="rounded bg-blue-500 px-3 py-1 text-sm text-black hover:bg-blue-400"
-                >
+                <p className="rounded-2xl bg-green-400 p-2 text-sm text-black">Logged in as {user.email}</p>
+                <button onClick={handleLogout} className="rounded bg-blue-500 px-3 py-1 text-sm text-black hover:bg-blue-400">
                   Sign out
                 </button>
               </div>
-              {status && <p className="text-green-600">{status}</p>}
-              {/* Tab navigation */}
-              <nav className="mb-6 flex flex-wrap gap-4 border-b border-gray-200 pb-2 text-sm font-medium">
+
+              {status && <p className="text-green-700">{status}</p>}
+
+              <nav className="mb-6 flex flex-wrap gap-4 border-b border-gray-300 pb-2 text-sm font-medium">
                 {['projects', 'general', 'about', 'skills', 'experience', 'education', 'social', 'profile'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
-                    className={`pb-2 ${activeTab === tab ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-gray-600 hover:text-indigo-600'}`}
+                    className={`pb-2 ${activeTab === tab ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-gray-700 hover:text-indigo-600'}`}
                   >
                     {tab.charAt(0).toUpperCase() + tab.slice(1)}
                   </button>
                 ))}
               </nav>
-              {/* Tab contents */}
+
               {activeTab === 'projects' && (
                 <div className="space-y-8">
                   <h2 className="text-xl font-bold">{editingSlug ? 'Edit Project' : 'Add New Project'}</h2>
                   <form onSubmit={handleSaveProject} className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Project Name</label>
+                      <label htmlFor="proj-name" className="block text-sm font-medium text-gray-700">Project Name</label>
                       <input
+                        id="proj-name"
+                        name="projectName"
                         type="text"
                         value={projName}
                         onChange={(e) => setProjName(e.target.value)}
-                        className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                        className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Short Description</label>
+                      <label htmlFor="proj-short" className="block text-sm font-medium text-gray-700">Short Description</label>
                       <textarea
+                        id="proj-short"
+                        name="projectShortDescription"
                         value={projShortDesc}
                         onChange={(e) => setProjShortDesc(e.target.value)}
                         rows={3}
-                        className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                        className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Full Description</label>
+                      <label htmlFor="proj-full" className="block text-sm font-medium text-gray-700">Full Description</label>
                       <textarea
+                        id="proj-full"
+                        name="projectFullDescription"
                         value={projFullDesc}
                         onChange={(e) => setProjFullDesc(e.target.value)}
                         rows={5}
-                        className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                        className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Skills (comma separated)</label>
+                      <label htmlFor="proj-skills" className="block text-sm font-medium text-gray-700">Skills (comma separated)</label>
                       <input
+                        id="proj-skills"
+                        name="projectSkills"
                         type="text"
                         value={projSkills}
                         onChange={(e) => setProjSkills(e.target.value)}
-                        className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                        className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       />
                     </div>
                     <div className="grid gap-4 md:grid-cols-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">GitHub Link</label>
+                        <label htmlFor="proj-github" className="block text-sm font-medium text-gray-700">GitHub Link</label>
                         <input
+                          id="proj-github"
+                          name="projectGithub"
                           type="url"
                           value={projGithub}
                           onChange={(e) => setProjGithub(e.target.value)}
-                          className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                          className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">LinkedIn Link</label>
+                        <label htmlFor="proj-linkedin" className="block text-sm font-medium text-gray-700">LinkedIn Link</label>
                         <input
+                          id="proj-linkedin"
+                          name="projectLinkedin"
                           type="url"
                           value={projLinkedin}
                           onChange={(e) => setProjLinkedin(e.target.value)}
-                          className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                          className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Demo Link</label>
+                        <label htmlFor="proj-demo" className="block text-sm font-medium text-gray-700">Demo Link</label>
                         <input
+                          id="proj-demo"
+                          name="projectDemo"
                           type="url"
                           value={projDemo}
                           onChange={(e) => setProjDemo(e.target.value)}
-                          className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                          className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                         />
                       </div>
                     </div>
@@ -434,29 +482,23 @@ export default function AdminPage() {
                       )}
                     </div>
                   </form>
+
                   <hr className="my-6" />
                   <h2 className="text-xl font-bold">Existing Projects</h2>
                   {projectList.length === 0 && <p>No projects found.</p>}
                   <ul className="space-y-2">
-                  {projectList.map((proj) => (
-                      <li
-                        key={proj.slug}
-                        className="flex items-center justify-between gap-4 rounded border-gray-950 border-1 p-2"
-                      >
-                        <span className="flex-1 truncate">
-                          {proj.name}
-                        </span>
+                    {projectList.map((proj) => (
+                      <li key={proj.slug} className="flex items-center justify-between gap-4 rounded border-1 border-gray-950 p-2">
+                        <span className="flex-1 truncate">{proj.name}</span>
                         <div className="flex gap-2">
+                          <button type="button" onClick={() => editProject(proj)} className="rounded bg-blue-500 px-2 py-1 text-xs font-medium text-white hover:bg-blue-600">Edit</button>
                           <button
                             type="button"
-                            onClick={() => editProject(proj)}
-                            className="rounded bg-blue-500 px-2 py-1 text-xs font-medium text-white hover:bg-blue-600"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteProject(proj.slug)}
+                            onClick={() =>
+                              remove(ref(database, `projects/${proj.slug}`))
+                                .then(() => setStatus('Project deleted.'))
+                                .catch((err) => setStatus(`Error deleting project: ${err.message}`))
+                            }
                             className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
                           >
                             Delete
@@ -467,81 +509,90 @@ export default function AdminPage() {
                   </ul>
                 </div>
               )}
+
               {activeTab === 'general' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">General Settings</h2>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Name</label>
+                    <label htmlFor="gen-name" className="block text-sm font-medium text-gray-700">Name</label>
                     <input
+                      id="gen-name"
+                      name="name"
                       type="text"
                       value={localSettings.name || ''}
                       onChange={(e) => setLocalSettings((prev) => ({ ...prev, name: e.target.value }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Title</label>
+                    <label htmlFor="gen-title" className="block text-sm font-medium text-gray-700">Title</label>
                     <input
+                      id="gen-title"
+                      name="title"
                       type="text"
                       value={localSettings.title || ''}
                       onChange={(e) => setLocalSettings((prev) => ({ ...prev, title: e.target.value }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Description</label>
+                    <label htmlFor="gen-desc" className="block text-sm font-medium text-gray-700">Description</label>
                     <textarea
+                      id="gen-desc"
+                      name="description"
                       value={localSettings.description || ''}
                       onChange={(e) => setLocalSettings((prev) => ({ ...prev, description: e.target.value }))}
                       rows={3}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Accent Color</label>
+                    <label htmlFor="gen-accent" className="block text-sm font-medium text-gray-700">Accent Color</label>
                     <input
+                      id="gen-accent"
+                      name="accentColor"
                       type="text"
                       value={localSettings.accentColor || ''}
                       onChange={(e) => setLocalSettings((prev) => ({ ...prev, accentColor: e.target.value }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
-                  <button
-                    onClick={handleSaveGeneral}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveGeneral} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save General
                   </button>
                 </div>
               )}
+
               {activeTab === 'about' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">About Me</h2>
                   <textarea
+                    id="about-me"
+                    name="aboutMe"
                     value={localSettings.aboutMe || ''}
                     onChange={(e) => setLocalSettings((prev) => ({ ...prev, aboutMe: e.target.value }))}
                     rows={6}
-                    className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                    className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                   />
-                  <button
-                    onClick={handleSaveAbout}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveAbout} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save About
                   </button>
                 </div>
               )}
+
               {activeTab === 'skills' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">Skills</h2>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Add Skill</label>
+                    <label htmlFor="skill-add" className="block text-sm font-medium text-gray-700">Add Skill</label>
                     <div className="flex gap-2">
                       <input
+                        id="skill-add"
+                        name="newSkill"
                         type="text"
                         value={localSettings.newSkill || ''}
                         onChange={(e) => setLocalSettings((prev) => ({ ...prev, newSkill: e.target.value }))}
-                        className="flex-1 rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                        className="flex-1 rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                       />
                       <button
                         type="button"
@@ -563,77 +614,80 @@ export default function AdminPage() {
                   </div>
                   <ul className="flex flex-wrap gap-2">
                     {(localSettings.skills || []).map((skill, idx) => (
-                      <li key={idx} className="flex items-center gap-1 rounded bg-gray-200 px-2 py-1 text-sm">
+                      <li key={idx} className="flex items-center gap-1 rounded bg-gray-300 px-2 py-1 text-sm">
                         <span>{skill}</span>
                         <button
                           type="button"
-                          onClick={() => setLocalSettings((prev) => ({
-                            ...prev,
-                            skills: prev.skills.filter((_, i) => i !== idx),
-                          }))}
-                          className="text-red-500"
+                          onClick={() =>
+                            setLocalSettings((prev) => ({
+                              ...prev,
+                              skills: prev.skills.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="text-red-600"
                         >
                           &times;
                         </button>
                       </li>
                     ))}
                   </ul>
-                  <button
-                    onClick={handleSaveSkills}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveSkills} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save Skills
                   </button>
                 </div>
               )}
+
               {activeTab === 'experience' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">Experience</h2>
                   <button
                     type="button"
-                    onClick={addExperience}
+                    onClick={() => setExpList((prev) => [...prev, { company: '', title: '', dateRange: '', bullets: [''] }])}
                     className="rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-700"
                   >
                     Add Experience
                   </button>
                   {expList.map((exp, idx) => (
-                    <div key={idx} className="rounded border border-gray-200 p-4">
+                    <div key={idx} className="rounded border border-gray-300 p-4">
                       <div className="flex justify-between">
                         <h3 className="font-semibold">Experience {idx + 1}</h3>
                         <button
                           type="button"
-                          onClick={() => deleteExperience(idx)}
-                          className="text-white bg-red-600 m-0 p-1 px-1.5 rounded-xl hover:bg-red-500"
+                          onClick={() => setExpList((prev) => prev.filter((_, i) => i !== idx))}
+                          className="m-0 rounded-xl bg-red-600 p-1 px-1.5 text-white hover:bg-red-500"
                         >
                           Delete
                         </button>
                       </div>
                       <div className="mt-2 grid gap-2 md:grid-cols-3">
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">Company</label>
+                          <label htmlFor={`exp-company-${idx}`} className="block text-sm font-medium text-gray-700">Company</label>
                           <input
+                            id={`exp-company-${idx}`}
                             type="text"
                             value={exp.company}
-                            onChange={(e) => updateExperienceField(idx, 'company', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setExpList((prev) => prev.map((it, i) => (i === idx ? { ...it, company: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">Title</label>
+                          <label htmlFor={`exp-title-${idx}`} className="block text-sm font-medium text-gray-700">Title</label>
                           <input
+                            id={`exp-title-${idx}`}
                             type="text"
                             value={exp.title}
-                            onChange={(e) => updateExperienceField(idx, 'title', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setExpList((prev) => prev.map((it, i) => (i === idx ? { ...it, title: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">Date Range</label>
+                          <label htmlFor={`exp-daterange-${idx}`} className="block text-sm font-medium text-gray-700">Date Range</label>
                           <input
+                            id={`exp-daterange-${idx}`}
                             type="text"
                             value={exp.dateRange}
-                            onChange={(e) => updateExperienceField(idx, 'dateRange', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setExpList((prev) => prev.map((it, i) => (i === idx ? { ...it, dateRange: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                       </div>
@@ -642,79 +696,91 @@ export default function AdminPage() {
                         {exp.bullets.map((bullet, bIdx) => (
                           <div key={bIdx} className="mt-1 flex gap-2">
                             <input
+                              id={`exp-bullet-${idx}-${bIdx}`}
                               type="text"
                               value={bullet}
-                              onChange={(e) => updateExperienceBullet(idx, bIdx, e.target.value)}
-                              className="flex-1 rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                              onChange={(e) =>
+                                setExpList((prev) =>
+                                  prev.map((it, i) =>
+                                    i === idx
+                                      ? { ...it, bullets: it.bullets.map((b, j) => (j === bIdx ? e.target.value : b)) }
+                                      : it
+                                  )
+                                )
+                              }
+                              className="flex-1 rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                             />
                           </div>
                         ))}
                         <button
                           type="button"
-                          onClick={() => addExperienceBullet(idx)}
-                          className="mt-1 rounded bg-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300"
+                          onClick={() =>
+                            setExpList((prev) => prev.map((it, i) => (i === idx ? { ...it, bullets: [...it.bullets, ''] } : it)))
+                          }
+                          className="mt-1 rounded bg-gray-300 px-2 py-1 text-xs font-medium text-gray-800 hover:bg-gray-400"
                         >
                           + Add Bullet
                         </button>
                       </div>
                     </div>
                   ))}
-                  <button
-                    onClick={handleSaveExperience}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveExperience} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save Experience
                   </button>
                 </div>
               )}
+
               {activeTab === 'education' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">Education</h2>
                   <button
                     type="button"
-                    onClick={addEducation}
+                    onClick={() => setEduList((prev) => [...prev, { school: '', degree: '', dateRange: '', achievements: [''] }])}
                     className="rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-700"
                   >
                     Add Education
                   </button>
                   {eduList.map((edu, idx) => (
-                    <div key={idx} className="rounded border border-gray-200 p-4">
+                    <div key={idx} className="rounded border border-gray-300 p-4">
                       <div className="flex justify-between">
                         <h3 className="font-semibold">Education {idx + 1}</h3>
                         <button
                           type="button"
-                          onClick={() => deleteEducation(idx)}
-                          className="text-white bg-red-600 m-0 p-1 px-1.5 rounded-xl hover:bg-red-500"
+                          onClick={() => setEduList((prev) => prev.filter((_, i) => i !== idx))}
+                          className="m-0 rounded-xl bg-red-600 p-1 px-1.5 text-white hover:bg-red-500"
                         >
                           Delete
                         </button>
                       </div>
                       <div className="mt-2 grid gap-2 md:grid-cols-3">
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">School</label>
+                          <label htmlFor={`edu-school-${idx}`} className="block text-sm font-medium text-gray-700">School</label>
                           <input
+                            id={`edu-school-${idx}`}
                             type="text"
                             value={edu.school}
-                            onChange={(e) => updateEducationField(idx, 'school', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setEduList((prev) => prev.map((it, i) => (i === idx ? { ...it, school: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">Degree</label>
+                          <label htmlFor={`edu-degree-${idx}`} className="block text-sm font-medium text-gray-700">Degree</label>
                           <input
+                            id={`edu-degree-${idx}`}
                             type="text"
                             value={edu.degree}
-                            onChange={(e) => updateEducationField(idx, 'degree', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setEduList((prev) => prev.map((it, i) => (i === idx ? { ...it, degree: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">Date Range</label>
+                          <label htmlFor={`edu-daterange-${idx}`} className="block text-sm font-medium text-gray-700">Date Range</label>
                           <input
+                            id={`edu-daterange-${idx}`}
                             type="text"
                             value={edu.dateRange}
-                            onChange={(e) => updateEducationField(idx, 'dateRange', e.target.value)}
-                            className="mt-1 w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            onChange={(e) => setEduList((prev) => prev.map((it, i) => (i === idx ? { ...it, dateRange: e.target.value } : it)))}
+                            className="mt-1 w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                           />
                         </div>
                       </div>
@@ -723,97 +789,155 @@ export default function AdminPage() {
                         {edu.achievements.map((ach, aIdx) => (
                           <div key={aIdx} className="mt-1 flex gap-2">
                             <input
+                              id={`edu-ach-${idx}-${aIdx}`}
                               type="text"
                               value={ach}
-                              onChange={(e) => updateEducationAchievement(idx, aIdx, e.target.value)}
-                              className="flex-1 rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                              onChange={(e) =>
+                                setEduList((prev) =>
+                                  prev.map((it, i) =>
+                                    i === idx
+                                      ? { ...it, achievements: it.achievements.map((a, j) => (j === aIdx ? e.target.value : a)) }
+                                      : it
+                                  )
+                                )
+                              }
+                              className="flex-1 rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                             />
                           </div>
                         ))}
                         <button
                           type="button"
-                          onClick={() => addEducationAchievement(idx)}
-                          className="mt-1 rounded bg-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300"
+                          onClick={() =>
+                            setEduList((prev) => prev.map((it, i) => (i === idx ? { ...it, achievements: [...it.achievements, ''] } : it)))
+                          }
+                          className="mt-1 rounded bg-gray-300 px-2 py-1 text-xs font-medium text-gray-800 hover:bg-gray-400"
                         >
                           + Add Achievement
                         </button>
                       </div>
                     </div>
                   ))}
-                  <button
-                    onClick={handleSaveEducation}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveEducation} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save Education
                   </button>
                 </div>
               )}
+
               {activeTab === 'social' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">Social Links</h2>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Email</label>
+                    <label htmlFor="social-email" className="block text-sm font-medium text-gray-700">Email</label>
                     <input
+                      id="social-email"
+                      name="socialEmail"
                       type="email"
                       value={localSettings.social?.email || ''}
-                      onChange={(e) => setLocalSettings((prev) => ({ ...prev, social: { ...prev.social, email: e.target.value } }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      onChange={(e) =>
+                        setLocalSettings((prev) => ({ ...prev, social: { ...(prev.social || {}), email: e.target.value } }))
+                      }
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">LinkedIn</label>
+                    <label htmlFor="social-linkedin" className="block text-sm font-medium text-gray-700">LinkedIn</label>
                     <input
+                      id="social-linkedin"
+                      name="socialLinkedin"
                       type="url"
                       value={localSettings.social?.linkedin || ''}
-                      onChange={(e) => setLocalSettings((prev) => ({ ...prev, social: { ...prev.social, linkedin: e.target.value } }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      onChange={(e) =>
+                        setLocalSettings((prev) => ({ ...prev, social: { ...(prev.social || {}), linkedin: e.target.value } }))
+                      }
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Twitter</label>
+                    <label htmlFor="social-twitter" className="block text-sm font-medium text-gray-700">Twitter</label>
                     <input
+                      id="social-twitter"
+                      name="socialTwitter"
                       type="url"
                       value={localSettings.social?.twitter || ''}
-                      onChange={(e) => setLocalSettings((prev) => ({ ...prev, social: { ...prev.social, twitter: e.target.value } }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      onChange={(e) =>
+                        setLocalSettings((prev) => ({ ...prev, social: { ...(prev.social || {}), twitter: e.target.value } }))
+                      }
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">GitHub</label>
+                    <label htmlFor="social-github" className="block text-sm font-medium text-gray-700">GitHub</label>
                     <input
+                      id="social-github"
+                      name="socialGithub"
                       type="url"
                       value={localSettings.social?.github || ''}
-                      onChange={(e) => setLocalSettings((prev) => ({ ...prev, social: { ...prev.social, github: e.target.value } }))}
-                      className="mt-1 block w-full rounded-md border-gray-950 border-1 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                      onChange={(e) =>
+                        setLocalSettings((prev) => ({ ...prev, social: { ...(prev.social || {}), github: e.target.value } }))
+                      }
+                      className="mt-1 block w-full rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     />
                   </div>
-                  <button
-                    onClick={handleSaveSocial}
-                    className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
+                  <button onClick={handleSaveSocial} className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
                     Save Social
                   </button>
                 </div>
               )}
+
               {activeTab === 'profile' && (
                 <div className="space-y-4">
                   <h2 className="text-xl font-bold">Profile Image</h2>
-                  {localSettings.profileImage && (
-                    <img src={localSettings.profileImage} alt="Profile preview" className="h-32 w-32 rounded-full object-cover" />
+
+                  {(pendingProfileUrl || localSettings.profileImage) && (
+                    <img
+                      src={pendingProfileUrl || localSettings.profileImage}
+                      alt="Profile preview"
+                      className="h-32 w-32 rounded-full object-cover"
+                      loading="eager"
+                      fetchPriority="high"
+                    />
                   )}
-                  <CldUploadButton
-                    uploadPreset={process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET}
-                    onUpload={handleProfileUpload}
-                    className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
-                    Upload Profile Image
-                  </CldUploadButton>
-                  <button
-                    onClick={handleSaveProfileImage}
-                    className="ml-3 rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-                  >
-                    Save Profile
-                  </button>
+
+                  {/* Direct upload (no widget) */}
+                  <input
+                    id="profile-file"
+                    name="profileFile"
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={onProfileFileSelected}
+                    className="hidden"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={onPickProfileFile}
+                      className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                    >
+                      Upload Profile Image
+                    </button>
+                    <input
+                      type="url"
+                      placeholder="Or paste an image URL here"
+                      value={pendingProfileUrl || localSettings.profileImage || ''}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setPendingProfileUrl(v);
+                        setLocalSettings((prev) => ({ ...prev, profileImage: v }));
+                      }}
+                      className="flex-1 min-w-[240px] rounded-md border-1 border-gray-950 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                    />
+                    <button
+                      onClick={handleSaveProfileImage}
+                      className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                    >
+                      Save Profile
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-gray-600">
+                    Tip: this uploader bypasses the Cloudinary widget (which was closing early) and uploads directly to your Cloudinary preset.
+                  </p>
                 </div>
               )}
             </div>

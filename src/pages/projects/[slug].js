@@ -104,7 +104,7 @@ export default function ProjectDetail() {
                 <img
                   src={url}
                   alt={`${name} screenshot ${idx + 1}`}
-                  className="h-64 w-full rounded-lg object-cover sm:h-96"
+                  className="w-full rounded-lg aspect-video object-cover"
                 />
               </SwiperSlide>
             ))}

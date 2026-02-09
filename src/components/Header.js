@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import useSettings from '../hooks/useSettings';
 
 /**
@@ -46,7 +47,7 @@ export default function Header() {
   return (
     <header
       id="site-header"
-      className="fixed top-0 left-1/2 z-50 w-[40%] max-w-5xl -translate-x-1/2 rounded-3xl py-4 m-3 backdrop-blur-lg bg-white/10 border-b border-gray-200"
+      className="fixed top-0 z-50 m-3 backdrop-blur-lg bg-white/10 border-b border-gray-200 transition-all duration-300 left-0 w-auto rounded-lg p-1 md:left-1/2 md:w-[40%] md:max-w-5xl md:-translate-x-1/2 md:rounded-3xl md:py-4 md:px-0"
     >
       {/* Desktop navigation */}
       <nav className="mx-auto hidden max-w-7xl md:flex justify-center">
@@ -73,42 +74,49 @@ export default function Header() {
       </nav>
 
       {/* Mobile hamburger */}
-      <div className="flex items-center justify-center md:hidden">
+      <div className="flex items-left justify-left md:hidden">
         <button
           type="button"
           onClick={toggleMenu}
           className="inline-flex items-center justify-center rounded-md p-2 text-gray-700 hover:bg-gray-200 hover:text-black focus:outline-none focus:ring-2 focus:ring-gray-400"
           aria-label="Toggle menu"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-6 w-6"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
+          <motion.div
+            initial={false}
+            animate={menuOpen ? 'open' : 'closed'}
+            className="flex h-6 w-6 flex-col items-center justify-center gap-1.5"
           >
-            {menuOpen ? (
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            ) : (
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            )}
-          </svg>
+            <motion.span
+              variants={{
+                closed: { rotate: 0, y: 0 },
+                open: { rotate: 45, y: 8 },
+              }}
+              transition={{ duration: 0.3 }} // Control animation speed
+              className="block h-0.5 w-6 origin-center rounded-full bg-current"
+            />
+            <motion.span
+              variants={{
+                closed: { opacity: 1 },
+                open: { opacity: 0 },
+              }}
+              transition={{ duration: 0.3 }}
+              className="block h-0.5 w-6 rounded-full bg-current"
+            />
+            <motion.span
+              variants={{
+                closed: { rotate: 0, y: 0 },
+                open: { rotate: -45, y: -8 },
+              }}
+              transition={{ duration: 0.3 }}
+              className="block h-0.5 w-6 origin-center rounded-full bg-current"
+            />
+          </motion.div>
         </button>
       </div>
 
       {/* Mobile dropdown */}
       {menuOpen && (
-        <div className="mt-2 rounded-lg border border-gray-200 bg-white p-4 shadow-md md:hidden">
+        <div className="mt-1 rounded-lg border border-gray-200 bg-white p-4 shadow-md md:hidden">
           <ul className="space-y-2 text-center">
             <li>
               <a
